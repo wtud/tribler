@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import logging
-import libtorrent as lt
+#import libtorrent as lt
 
 from binascii import hexlify
 from traceback import print_exc
