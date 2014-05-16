@@ -4,7 +4,7 @@ import os
 import time
 import binascii
 import threading
-#import libtorrent as lt
+import libtorrent as lt
 
 import logging
 from copy import deepcopy
@@ -28,7 +28,76 @@ class LibtorrentMgr:
     __single = None
 
     def __init__(self, trsession, ignore_singleton=False):
-        pass
+        if not ignore_singleton:
+            if LibtorrentMgr.__single:
+                raise RuntimeError("LibtorrentMgr is singleton")
+            LibtorrentMgr.__single = self
+
+        self._logger = logging.getLogger(self.__class__.__name__)
+
+        self.trsession = trsession
+        self.notifier = Notifier.getInstance()
+        settings = lt.session_settings()
+        settings.user_agent = 'Tribler/' + version_id
+        # Elric: Strip out the -rcX, -beta, -whatever tail on the version string.
+        fingerprint = ['TL'] + map(int, version_id.split('-')[0].split('.')) + [0]
+        # Workaround for libtorrent 0.16.3 segfault (see https://code.google.com/p/libtorrent/issues/detail?id=369)
+        self.ltsession = lt.session(lt.fingerprint(*fingerprint), flags=1)
+        self.ltsession.set_settings(settings)
+        self.ltsession.set_alert_mask(lt.alert.category_t.stats_notification |
+                                      lt.alert.category_t.error_notification |
+                                      lt.alert.category_t.status_notification |
+                                      lt.alert.category_t.storage_notification |
+                                      lt.alert.category_t.performance_warning)
+
+        listen_port = self.trsession.get_listen_port()
+        self.ltsession.listen_on(listen_port, listen_port + 10)
+        if listen_port != self.ltsession.listen_port():
+            self.trsession.set_listen_port_runtime(self.ltsession.listen_port())
+
+        self.set_upload_rate_limit(-1)
+        self.set_download_rate_limit(-1)
+        self.upnp_mapper = self.ltsession.start_upnp()
+
+        self._logger.info("LibtorrentMgr: listening on %d", self.ltsession.listen_port())
+
+        # Start DHT
+        self.dht_ready = False
+        try:
+            dht_state = open(os.path.join(self.trsession.get_state_dir(), DHTSTATE_FILENAME)).read()
+            self.ltsession.start_dht(lt.bdecode(dht_state))
+        except:
+            self._logger.error("LibtorrentMgr: could not restore dht state, starting from scratch")
+            self.ltsession.start_dht(None)
+
+        self.ltsession.add_dht_router('router.bittorrent.com', 6881)
+        self.ltsession.add_dht_router('router.utorrent.com', 6881)
+        self.ltsession.add_dht_router('router.bitcomet.com', 6881)
+
+        # Load proxy settings
+        self.set_proxy_settings(*self.trsession.get_libtorrent_proxy_settings())
+
+        self.set_utp(self.trsession.get_libtorrent_utp())
+
+        self.external_ip = None
+
+        self.torlock = NoDispersyRLock()
+        self.torrents = {}
+
+        self.metainfo_requests = {}
+        self.metainfo_lock = threading.RLock()
+        self.metainfo_cache = {}
+
+        self.trsession.lm.rawserver.add_task(self.process_alerts, 1)
+        self.trsession.lm.rawserver.add_task(self.reachability_check, 1)
+        self.trsession.lm.rawserver.add_task(self.monitor_dht, 5)
+
+        self.upnp_mappings = {}
+
+        # make tmp-dir to be used for dht collection
+        self.metadata_tmpdir = os.path.join(self.trsession.get_state_dir(), METAINFO_TMPDIR)
+        if not os.path.exists(self.metadata_tmpdir):
+            os.mkdir(self.metadata_tmpdir)
 
     def getInstance(*args, **kw):
         if LibtorrentMgr.__single is None:
