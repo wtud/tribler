@@ -23,7 +23,8 @@ from Tribler.dispersy.message import Message, BatchConfiguration
 from Tribler.dispersy.resolution import PublicResolution
 
 
-if __debug__:
+import os
+if __debug__ and not 'ANDROID_HOST' in os.environ:
     from Tribler.dispersy.tool.lencoder import log
 
 logger = logging.getLogger(__name__)

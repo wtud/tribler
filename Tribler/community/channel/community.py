@@ -24,7 +24,8 @@ from payload import (ChannelPayload, TorrentPayload, PlaylistPayload, CommentPay
                      PlaylistTorrentPayload, MissingChannelPayload, MarkTorrentPayload)
 
 
-if __debug__:
+import os
+if __debug__ and not 'ANDROID_HOST' in os.environ:
     from Tribler.dispersy.tool.lencoder import log
 
 
